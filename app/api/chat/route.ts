@@ -1,48 +1,41 @@
-import OpenAI from 'openai'
-import { OpenAIStream, StreamingTextResponse } from 'ai'
-import { NextResponse } from 'next/server'
-import { clerkClient, currentUser } from '@clerk/nextjs'
+import {NextResponse} from 'next/server' // Import NextResponse from Next.js for handling responses
+import OpenAI from 'openai' // Import OpenAI library for interacting with the OpenAI API
 
-export const runtime = 'edge'
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || '' })
+// System prompt for the AI, providing guidelines on how to respond to users
+const systemPrompt = // Use your own system prompt here
 
-export async function POST(req: Request) {
-  try {
-    if (!process.env.OPENAI_API_KEY) {
-      return new NextResponse('Missing OpenAI API Key.', { status: 400 })
-    }
+// POST function to handle incoming requests
+export async function POST({ req }: {req}) {
+  const openai = new OpenAI() // Create a new instance of the OpenAI client
+  const data = await req.json() // Parse the JSON body of the incoming request
 
-    const user = await currentUser()
+  // Create a chat completion request to the OpenAI API
+  const completion = await openai.chat.completions.create({
+    messages: [{role: 'system', content: systemPrompt}, ...data], // Include the system prompt and user messages
+    model: 'gpt-4o', // Specify the model to use
+    stream: true, // Enable streaming responses
+  })
 
-    if (!user) {
-      return new NextResponse('You need to sign in first.', { status: 401 })
-    }
-
-    const credits = Number(user.publicMetadata?.credits || 0)
-
-    if (!credits) {
-      return new NextResponse('You have no credits left.', { status: 402 })
-    }
-
-    const { messages } = await req.json()
-    const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      stream: true,
-      messages
-    })
-
-    // Deduct credits
-    await clerkClient.users.updateUserMetadata(user.id, {
-      publicMetadata: {
-        credits: credits - 1
+  // Create a ReadableStream to handle the streaming response
+  const stream = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder() // Create a TextEncoder to convert strings to Uint8Array
+      try {
+        // Iterate over the streamed chunks of the response
+        for await (const chunk of completion) {
+          const content = chunk.choices[0]?.delta?.content // Extract the content from the chunk
+          if (content) {
+            const text = encoder.encode(content) // Encode the content to Uint8Array
+            controller.enqueue(text) // Enqueue the encoded text to the stream
+          }
+        }
+      } catch (err) {
+        controller.error(err) // Handle any errors that occur during streaming
+      } finally {
+        controller.close() // Close the stream when done
       }
-    })
+    },
+  })
 
-    const stream = OpenAIStream(response)
-    return new StreamingTextResponse(stream)
-  } catch (error: any) {
-    return new NextResponse(error.message || 'Something went wrong!', {
-      status: 500
-    })
-  }
+  return new NextResponse(stream) // Return the stream as the response
 }
